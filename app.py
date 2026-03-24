@@ -1,6 +1,7 @@
 import streamlit as st
-import anthropic
 import pypdf
+import requests
+import json
 
 st.set_page_config(page_title="AiVenair", page_icon="🏢", layout="wide")
 st.title("🏢 AiVenair — Asistente de Documentos")
@@ -29,20 +30,25 @@ if st.session_state.texto_pdfs:
     for msg in st.session_state.historial:
         with st.chat_message(msg["rol"]):
             st.write(msg["texto"])
+
     pregunta = st.chat_input("Hazle una pregunta a tus documentos...")
     if pregunta:
         with st.chat_message("user"):
             st.write(pregunta)
-        cliente = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_KEY"])
-        respuesta = cliente.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1000,
-            messages=[{
-                "role": "user",
-                "content": f"Eres un asistente empresarial. Responde SOLO basándote en este contexto:\n\n{st.session_state.texto_pdfs}\n\nPregunta: {pregunta}\n\nSi no está en los documentos, dilo claramente."
+
+        api_key = st.secrets["GEMINI_KEY"]
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        payload = {
+            "contents": [{
+                "parts": [{
+                    "text": f"Eres un asistente empresarial. Responde SOLO basándote en este contexto:\n\n{st.session_state.texto_pdfs}\n\nPregunta: {pregunta}\n\nSi no está en los documentos, dilo claramente."
+                }]
             }]
-        )
-        texto = respuesta.content[0].text
+        }
+        response = requests.post(url, json=payload)
+        data = response.json()
+        texto = data["candidates"][0]["content"]["parts"][0]["text"]
+
         with st.chat_message("assistant"):
             st.write(texto)
         st.session_state.historial.append({"rol": "user", "texto": pregunta})
