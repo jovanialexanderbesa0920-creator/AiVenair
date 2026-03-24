@@ -1,6 +1,5 @@
 import streamlit as st
 import anthropic
-import tempfile
 import pypdf
 
 st.set_page_config(page_title="AiVenair", page_icon="🏢", layout="wide")
@@ -20,7 +19,9 @@ with st.sidebar:
             for pdf in pdfs:
                 reader = pypdf.PdfReader(pdf)
                 for page in reader.pages:
-                    texto_total += page.extract_text() + "\n"
+                    t = page.extract_text()
+                    if t:
+                        texto_total += t + "\n"
             st.session_state.texto_pdfs = texto_total[:15000]
         st.success(f"✅ {len(pdfs)} documento(s) listos")
 
@@ -28,12 +29,10 @@ if st.session_state.texto_pdfs:
     for msg in st.session_state.historial:
         with st.chat_message(msg["rol"]):
             st.write(msg["texto"])
-
     pregunta = st.chat_input("Hazle una pregunta a tus documentos...")
     if pregunta:
         with st.chat_message("user"):
             st.write(pregunta)
-
         cliente = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_KEY"])
         respuesta = cliente.messages.create(
             model="claude-sonnet-4-20250514",
