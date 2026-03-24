@@ -1,7 +1,6 @@
 import streamlit as st
 import pypdf
-import requests
-import json
+from groq import Groq
 
 st.set_page_config(page_title="AiVenair", page_icon="🏢", layout="wide")
 st.title("🏢 AiVenair — Asistente de Documentos")
@@ -37,31 +36,19 @@ if st.session_state.texto_pdfs:
             st.write(pregunta)
 
         try:
-            api_key = st.secrets["GEMINI_KEY"]
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-            payload = {
-                "contents": [{
-                    "parts": [{
-                        "text": f"Eres un asistente empresarial. Responde SOLO basándote en este contexto:\n\n{st.session_state.texto_pdfs}\n\nPregunta: {pregunta}\n\nSi no está en los documentos, dilo claramente."
-                    }]
-                }]
-            }
-            response = requests.post(url, json=payload, timeout=30)
-            data = response.json()
+            cliente = Groq(api_key=st.secrets["GROQ_KEY"])
+            respuesta = cliente.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{
+                    "role": "user",
+                    "content": f"Eres un asistente empresarial. Responde SOLO basándote en este contexto:\n\n{st.session_state.texto_pdfs}\n\nPregunta: {pregunta}\n\nSi no está en los documentos, dilo claramente."
+                }],
+                max_tokens=1000
+            )
+            texto = respuesta.choices[0].message.content
 
-            if "candidates" in data:
-                texto = data["candidates"][0]["content"]["parts"][0]["text"]
-            elif "error" in data:
-                texto = f"❌ Error Gemini: {data['error']['message']}"
-            else:
-                texto = f"❌ Respuesta inesperada: {json.dumps(data)}"
-
-        except requests.exceptions.Timeout:
-            texto = "❌ Timeout: Gemini tardó demasiado, intenta de nuevo."
-        except KeyError as e:
-            texto = f"❌ KeyError: {str(e)} — Respuesta: {json.dumps(data)}"
         except Exception as e:
-            texto = f"❌ Error inesperado: {str(e)}"
+            texto = f"❌ Error: {str(e)}"
 
         with st.chat_message("assistant"):
             st.write(texto)
