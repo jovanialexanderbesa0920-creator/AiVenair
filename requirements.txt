@@ -1,0 +1,7 @@
+streamlit
+anthropic
+langchain
+langchain-community
+faiss-cpu
+pypdf
+sentence-transformers
