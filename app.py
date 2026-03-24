@@ -35,7 +35,7 @@ if st.session_state.texto_pdfs:
             st.write(pregunta)
         cliente = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_KEY"])
         respuesta = cliente.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-5",
             max_tokens=1000,
             messages=[{
                 "role": "user",
