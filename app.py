@@ -1,14 +1,16 @@
 import streamlit as st
 import pdfplumber
 import re
+import os
 from groq import Groq
+import google.generativeai as genai
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-st.set_page_config(page_title="AiVenair Expert v3", page_icon="🏢", layout="wide")
+# Configuración de interfaz
+st.set_page_config(page_title="AiVenair - Soporte Ininterrumpido", page_icon="🏢", layout="wide")
 
-# --- ESTADOS DE SESIÓN ---
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 if "historial" not in st.session_state:
@@ -20,91 +22,94 @@ def cargar_modelo_embeddings():
 
 embeddings = cargar_modelo_embeddings()
 
-# --- FUNCIONES DE PROCESAMIENTO ---
-def extraer_datos_venair(file):
-    texto_con_contexto = ""
-    nombre_producto = "Producto Desconocido"
-    
+# --- PROCESAMIENTO DE FICHAS TÉCNICAS ---
+def procesar_pdf_venair(file):
+    texto_estructurado = ""
     with pdfplumber.open(file) as pdf:
-        # 1. Intentar capturar el nombre del producto en la primera página
-        primera_página = pdf.pages[0].extract_text()
-        match = re.search(r"Vena®\s+[\w\d\s]+", primera_página)
+        # [span_0](start_span)[span_1](start_span)Detectar nombre del producto (ej: Vena® SIL 640)[span_0](end_span)[span_1](end_span)
+        primera_pag = pdf.pages[0].extract_text() or ""
+        nombre_prod = "Producto Venair"
+        match = re.search(r"Vena®\s+[\w\d\s]+", primera_pag)
         if match:
-            nombre_producto = match.group(0).strip()
-        
-        # 2. Extraer texto y tablas de cada página
+            nombre_prod = match.group(0).strip()
+            
         for i, page in enumerate(pdf.pages):
-            # Extraer tablas formateadas para mantener la estructura de la ficha técnica
+            contenido = page.extract_text() or ""
+            # [span_2](start_span)Extraer tablas para datos de presión y diámetros[span_2](end_span)
             tabla = page.extract_table()
             texto_tabla = ""
             if tabla:
                 for fila in tabla:
-                    texto_tabla += " | ".join([str(celda) for celda in fila if celda]) + "\n"
+                    texto_tabla += " | ".join([str(c) for c in fila if c]) + "\n"
             
-            # Combinar texto normal y tabla, inyectando el nombre del producto siempre
-            contenido = page.extract_text() or ""
-            texto_con_contexto += f"\n[PRODUCTO: {nombre_producto}] [PÁGINA: {i+1}]\n{contenido}\n{texto_tabla}\n"
-            
-    return texto_con_contexto
+            texto_estructurado += f"\n[PRODUCTO: {nombre_prod}] [PÁGINA: {i+1}]\n{contenido}\n{texto_tabla}\n"
+    return texto_estructurado
 
-# --- BARRA LATERAL ---
-with st.sidebar:
-    st.header("🏢 Catálogo AiVenair")
-    archivos = st.file_uploader("Subir fichas técnicas (PDF)", type="pdf", accept_multiple_files=True)
+# --- LÓGICA DE INTELIGENCIA (DUAL API) ---
+def consultar_ia(contexto, pregunta):
+    prompt_sistema = (
+        "Eres el experto técnico de AiVenair. Responde usando SOLO el contexto de fichas técnicas.\n"
+        "Si preguntan por productos, enuméralos según las etiquetas [PRODUCTO: ...].\n"
+        "Si preguntan por especificaciones (presión, temperatura, radio), usa las tablas del contexto.\n"
+        f"CONTEXTO:\n{contexto}"
+    )
+
+    # INTENTO 1: GROQ (Llama 3.3)
+    try:
+        cliente_groq = Groq(api_key=st.secrets["GROQ_KEY"])
+        res = cliente_groq.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": pregunta}],
+            temperature=0.1
+        )
+        return res.choices[0].message.content, "Groq (Principal)"
     
-    if archivos and st.button("Actualizar Base de Datos"):
-        with st.spinner("Procesando catálogos y tablas técnicas..."):
-            texto_total = ""
-            for arc in archivos:
-                texto_total += extraer_datos_venair(arc)
-            
-            # Chunks más grandes para no romper las tablas de la página 2
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=2000,
-                chunk_overlap=400
-            )
-            docs = text_splitter.split_text(texto_total)
-            st.session_state.vector_store = FAISS.from_texts(docs, embeddings)
-            st.success(f"✅ {len(archivos)} productos listos.")
-
-# --- CHAT ---
-if st.session_state.vector_store:
-    for msg in st.session_state.historial:
-        with st.chat_message(msg["rol"]):
-            st.write(msg["texto"])
-
-    if pregunta := st.chat_input("¿Qué presión de trabajo tiene la SIL 640 de 1 pulgada?"):
-        with st.chat_message("user"):
-            st.write(pregunta)
-
-        # Buscamos en 15 fragmentos para cubrir múltiples productos
-        docs = st.session_state.vector_store.similarity_search(pregunta, k=15)
-        contexto = "\n\n".join([d.page_content for d in docs])
-
+    except Exception as e:
+        # INTENTO 2: RESPALDO GOOGLE GEMINI (Si Groq falla o agota cuota)
         try:
-            cliente = Groq(api_key=st.secrets["GROQ_KEY"])
+            genai.configure(api_key=st.secrets["GEMINI_KEY"])
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            # En Gemini el prompt de sistema se concatena o se usa system_instruction
+            full_prompt = f"{prompt_sistema}\n\nUsuario pregunta: {pregunta}"
+            res_gemini = model.generate_content(full_prompt)
+            return res_gemini.text, "Gemini (Respaldo)"
+        except Exception as e_gen:
+            return f"Error crítico en ambas APIs: {str(e_gen)}", "Ninguno"
+
+# --- INTERFAZ ---
+with st.sidebar:
+    st.header("🏢 Administración de Fichas")
+    archivos = st.file_uploader("Subir PDFs de Venair", type="pdf", accept_multiple_files=True)
+    
+    if archivos and st.button("Indexar Catálogo"):
+        with st.spinner("Sincronizando base de datos técnica..."):
+            base_datos_texto = ""
+            for arc in archivos:
+                base_datos_texto += procesar_pdf_venair(arc)
             
-            prompt_sistema = (
-                "Eres el experto técnico de AiVenair. Responde consultas basadas en las fichas técnicas proporcionadas.\n"
-                "REGLAS:\n"
-                "1. Si te preguntan por productos, revisa las etiquetas [PRODUCTO: ...] en el contexto.\n"
-                "2. Para datos de presión o diámetro, busca en las filas de las tablas (ej: '1 | 25 | 6.7 Bar').\n"
-                "3. La SIL 640 tiene un rango de -60°C a +180°C. Si preguntan por temperatura, usa esos valores.\n"
-                f"\nCONTEXTO TÉCNICO:\n{contexto}"
-            )
+            splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=400)
+            fragmentos = splitter.split_text(base_datos_texto)
+            st.session_state.vector_store = FAISS.from_texts(fragmentos, embeddings)
+            st.success("✅ Catálogo actualizado.")
 
-            res = cliente.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": pregunta}],
-                temperature=0.1
-            )
-            respuesta_ia = res.choices[0].message.content
-        except Exception as e:
-            respuesta_ia = f"❌ Error: {str(e)}"
+if st.session_state.vector_store:
+    for m in st.session_state.historial:
+        with st.chat_message(m["rol"]): st.write(m["texto"])
 
+    if pregunta := st.chat_input("¿Qué presión resiste la SIL 640 de 1/2 pulgada?"):
+        with st.chat_message("user"): st.write(pregunta)
+
+        # RAG: Buscar 15 fragmentos más relevantes
+        docs = st.session_state.vector_store.similarity_search(pregunta, k=15)
+        contexto_rag = "\n\n".join([d.page_content for d in docs])
+
+        respuesta, motor = consultar_ia(contexto_rag, pregunta)
+        
         with st.chat_message("assistant"):
-            st.write(respuesta_ia)
+            st.markdown(respuesta)
+            st.caption(f"Respondido por motor: {motor}")
+        
         st.session_state.historial.append({"rol": "user", "texto": pregunta})
-        st.session_state.historial.append({"rol": "assistant", "texto": respuesta_ia})
+        st.session_state.historial.append({"rol": "assistant", "texto": respuesta})
 else:
-    st.info("Por favor, carga las fichas técnicas para comenzar.")
+    st.info("👈 Cargue las fichas técnicas para activar el soporte.")
