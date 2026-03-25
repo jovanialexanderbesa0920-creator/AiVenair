@@ -1,6 +1,7 @@
 streamlit
 pdfplumber
 groq
+google-generativeai
 langchain
 langchain-community
 langchain-huggingface
