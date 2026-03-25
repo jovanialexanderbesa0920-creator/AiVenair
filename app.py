@@ -3,7 +3,7 @@ import pypdf
 from groq import Groq
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # Configuración de página
 st.set_page_config(page_title="AiVenair RAG", page_icon="🏢", layout="wide")
