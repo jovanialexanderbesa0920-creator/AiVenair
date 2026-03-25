@@ -8,108 +8,135 @@ from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Configuración de interfaz
-st.set_page_config(page_title="AiVenair - Soporte Ininterrumpido", page_icon="🏢", layout="wide")
+# 1. Configuración de la Interfaz Profesional
+st.set_page_config(page_title="AiVenair Expert v4", page_icon="🏢", layout="wide")
 
+st.markdown("""
+    <style>
+    .stApp { background-color: #f8f9fa; }
+    .stChatMessage { border-radius: 15px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+st.title("🏢 AiVenair — Consultor Técnico Inteligente")
+st.caption("Respaldo Dual: Llama 3.3 (Groq) + Gemini 1.5 Flash (Google)")
+
+# 2. Inicialización de Memoria
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
 if "historial" not in st.session_state:
     st.session_state.historial = []
 
 @st.cache_resource
-def cargar_modelo_embeddings():
+def cargar_embeddings():
+    # Modelo optimizado para español técnico
     return HuggingFaceEmbeddings(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
-embeddings = cargar_modelo_embeddings()
+embeddings_model = cargar_embeddings()
 
-# --- PROCESAMIENTO DE FICHAS TÉCNICAS ---
-def procesar_pdf_venair(file):
-    texto_estructurado = ""
+# 3. Procesamiento Avanzado de Fichas Técnicas
+def procesar_ficha_venair(file):
+    texto_final = ""
     with pdfplumber.open(file) as pdf:
-        # [span_0](start_span)[span_1](start_span)Detectar nombre del producto (ej: Vena® SIL 640)[span_0](end_span)[span_1](end_span)
-        primera_pag = pdf.pages[0].extract_text() or ""
-        nombre_prod = "Producto Venair"
-        match = re.search(r"Vena®\s+[\w\d\s]+", primera_pag)
-        if match:
-            nombre_prod = match.group(0).strip()
+        # Extraer el nombre del producto del encabezado (Ej: Vena® SIL 640)
+        texto_inicio = pdf.pages[0].extract_text() or ""
+        # [span_0](start_span)[span_1](start_span)Buscamos el patrón "Vena®" seguido de su modelo[span_0](end_span)[span_1](end_span)
+        match = re.search(r"Vena®\s+[\w\d\s]+", texto_inicio)
+        id_producto = match.group(0).strip() if match else "Producto Venair"
+        
+        for num, pagina in enumerate(pdf.pages):
+            # Texto plano
+            cuerpo = pagina.extract_text() or ""
             
-        for i, page in enumerate(pdf.pages):
-            contenido = page.extract_text() or ""
-            # [span_2](start_span)Extraer tablas para datos de presión y diámetros[span_2](end_span)
-            tabla = page.extract_table()
-            texto_tabla = ""
-            if tabla:
-                for fila in tabla:
-                    texto_tabla += " | ".join([str(c) for c in fila if c]) + "\n"
+            # [span_2](start_span)Tablas (Vital para presiones y diámetros en pág 2)[span_2](end_span)
+            tabla_datos = pagina.extract_table()
+            txt_tabla = ""
+            if tabla_datos:
+                for fila in tabla_datos:
+                    # Limpiamos valores nulos y unimos con separadores
+                    fila_limpia = [str(item).replace('\n', ' ') for item in fila if item]
+                    txt_tabla += " | ".join(fila_limpia) + "\n"
             
-            texto_estructurado += f"\n[PRODUCTO: {nombre_prod}] [PÁGINA: {i+1}]\n{contenido}\n{texto_tabla}\n"
-    return texto_estructurado
+            # Inyectamos el nombre del producto en cada página para que la IA no pierda el contexto
+            texto_final += f"\n[DOCUMENTO: {id_producto}] [PAG: {num+1}]\n{cuerpo}\n{txt_tabla}\n"
+            
+    return texto_final
 
-# --- LÓGICA DE INTELIGENCIA (DUAL API) ---
-def consultar_ia(contexto, pregunta):
-    prompt_sistema = (
-        "Eres el experto técnico de AiVenair. Responde usando SOLO el contexto de fichas técnicas.\n"
-        "Si preguntan por productos, enuméralos según las etiquetas [PRODUCTO: ...].\n"
-        "Si preguntan por especificaciones (presión, temperatura, radio), usa las tablas del contexto.\n"
-        f"CONTEXTO:\n{contexto}"
+# 4. Cerebro con Redundancia (Dual API)
+def generar_respuesta(contexto, prompt_usuario):
+    instrucciones = (
+        "Eres el Ingeniero de Soporte Técnico de AiVenair. Tu misión es dar datos precisos.\n"
+        "REGLAS:\n"
+        "1. Usa el contexto para responder. Si mencionan presiones, busca en las tablas extraídas.\n"
+        "2. Identifica el producto por la etiqueta [DOCUMENTO: ...].\n"
+        "3. [span_3](start_span)La Vena® SIL 640 soporta de -60°C a +180°C[span_3](end_span). Si preguntan por calor extremo, menciónalo.\n"
+        f"\nCONTEXTO TÉCNICO:\n{contexto}"
     )
 
-    # INTENTO 1: GROQ (Llama 3.3)
+    # INTENTO A: GROQ
     try:
-        cliente_groq = Groq(api_key=st.secrets["GROQ_KEY"])
-        res = cliente_groq.chat.completions.create(
+        client = Groq(api_key=st.secrets["GROQ_KEY"])
+        chat_completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "system", "content": prompt_sistema}, {"role": "user", "content": pregunta}],
+            messages=[
+                {"role": "system", "content": instrucciones},
+                {"role": "user", "content": prompt_usuario}
+            ],
             temperature=0.1
         )
-        return res.choices[0].message.content, "Groq (Principal)"
+        return chat_completion.choices[0].message.content, "Motor Principal (Groq)"
     
     except Exception as e:
-        # INTENTO 2: RESPALDO GOOGLE GEMINI (Si Groq falla o agota cuota)
+        # INTENTO B: GEMINI (Respaldo)
         try:
             genai.configure(api_key=st.secrets["GEMINI_KEY"])
+            # Usamos el nombre del modelo sin prefijos extraños para evitar el 404
             model = genai.GenerativeModel('gemini-1.5-flash')
-            # En Gemini el prompt de sistema se concatena o se usa system_instruction
-            full_prompt = f"{prompt_sistema}\n\nUsuario pregunta: {pregunta}"
-            res_gemini = model.generate_content(full_prompt)
-            return res_gemini.text, "Gemini (Respaldo)"
-        except Exception as e_gen:
-            return f"Error crítico en ambas APIs: {str(e_gen)}", "Ninguno"
+            full_query = f"{instrucciones}\n\nPregunta del cliente: {prompt_usuario}"
+            response = model.generate_content(full_query)
+            return response.text, "Motor de Respaldo (Gemini)"
+        except Exception as e_gem:
+            return f"Lo siento, ambos sistemas de IA están saturados. Error: {str(e_gem)}", "Falla Total"
 
-# --- INTERFAZ ---
+# 5. Interfaz de Usuario
 with st.sidebar:
-    st.header("🏢 Administración de Fichas")
-    archivos = st.file_uploader("Subir PDFs de Venair", type="pdf", accept_multiple_files=True)
+    st.header("⚙️ Configuración")
+    pdf_docs = st.file_uploader("Cargar Catálogos PDF", type="pdf", accept_multiple_files=True)
     
-    if archivos and st.button("Indexar Catálogo"):
-        with st.spinner("Sincronizando base de datos técnica..."):
-            base_datos_texto = ""
-            for arc in archivos:
-                base_datos_texto += procesar_pdf_venair(arc)
+    if pdf_docs and st.button("Indexar Productos"):
+        with st.spinner("Analizando materiales y tablas técnicas..."):
+            texto_acumulado = ""
+            for doc in pdf_docs:
+                texto_acumulado += procesar_ficha_venair(doc)
             
-            splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=400)
-            fragmentos = splitter.split_text(base_datos_texto)
-            st.session_state.vector_store = FAISS.from_texts(fragmentos, embeddings)
-            st.success("✅ Catálogo actualizado.")
+            # Dividir en fragmentos respetando el tamaño de las tablas
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1800, chunk_overlap=300)
+            chunks = splitter.split_text(texto_acumulado)
+            
+            st.session_state.vector_store = FAISS.from_texts(chunks, embeddings_model)
+            st.success(f"✅ {len(pdf_docs)} productos indexados correctamente.")
 
+# Mostrar chat
 if st.session_state.vector_store:
-    for m in st.session_state.historial:
-        with st.chat_message(m["rol"]): st.write(m["texto"])
+    for chat in st.session_state.historial:
+        with st.chat_message(chat["rol"]):
+            st.write(chat["texto"])
 
-    if pregunta := st.chat_input("¿Qué presión resiste la SIL 640 de 1/2 pulgada?"):
-        with st.chat_message("user"): st.write(pregunta)
-
-        # RAG: Buscar 15 fragmentos más relevantes
-        docs = st.session_state.vector_store.similarity_search(pregunta, k=15)
-        contexto_rag = "\n\n".join([d.page_content for d in docs])
-
-        respuesta, motor = consultar_ia(contexto_rag, pregunta)
+    if user_input := st.chat_input("¿Cuál es el radio de curvatura o presión de la SIL 640?"):
+        with st.chat_message("user"):
+            st.write(user_input)
+        
+        # RAG: Recuperar los 12 fragmentos más parecidos
+        busqueda = st.session_state.vector_store.similarity_search(user_input, k=12)
+        contexto_rag = "\n\n".join([res.page_content for res in busqueda])
+        
+        respuesta_final, motor_usado = generar_respuesta(contexto_rag, user_input)
         
         with st.chat_message("assistant"):
-            st.markdown(respuesta)
-            st.caption(f"Respondido por motor: {motor}")
+            st.markdown(respuesta_final)
+            st.caption(f"Fuente: {motor_usado}")
         
-        st.session_state.historial.append({"rol": "user", "texto": pregunta})
-        st.session_state.historial.append({"rol": "assistant", "texto": respuesta})
+        st.session_state.historial.append({"rol": "user", "texto": user_input})
+        st.session_state.historial.append({"rol": "assistant", "texto": respuesta_final})
 else:
-    st.info("👈 Cargue las fichas técnicas para activar el soporte.")
+    st.info("👋 Por favor, sube las fichas técnicas en el panel lateral para comenzar.")
