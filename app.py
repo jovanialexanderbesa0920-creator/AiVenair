@@ -1,103 +1,86 @@
 import streamlit as st
 import pypdf
 from groq import Groq
-import re
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-st.set_page_config(page_title="AiVenair", page_icon="🏢", layout="wide")
-st.title("🏢 AiVenair — Asistente Corporativo Especializado")
+# Configuración de página
+st.set_page_config(page_title="AiVenair RAG", page_icon="🏢", layout="wide")
+st.title("🏢 AiVenair — Inteligencia Documental Ilimitada")
 
-# 1. Inicialización de estado dividido: Uno visual, otro estructurado para la API
-if "texto_pdfs" not in st.session_state:
-    st.session_state.texto_pdfs = ""
-if "historial_interfaz" not in st.session_state:
-    st.session_state.historial_interfaz = []
-if "historial_api" not in st.session_state:
-    st.session_state.historial_api = []
+# 1. Inicializar estados
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+if "historial" not in st.session_state:
+    st.session_state.historial = []
 
-def limpiar_texto(texto):
-    """Elimina saltos de línea y espacios excesivos para optimizar el consumo de tokens."""
-    texto = re.sub(r'\n+', '\n', texto)
-    return texto.strip()
+# Modelo de embeddings (Corre local en tu CPU, es GRATIS e ilimitado)
+@st.cache_resource
+def cargar_modelo_embeddings():
+    return HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+embeddings = cargar_modelo_embeddings()
 
 with st.sidebar:
-    st.header("📂 Gestión Documental")
-    pdfs = st.file_uploader("Seleccione los manuales técnicos o comerciales (PDF)", type="pdf", accept_multiple_files=True)
+    st.header("📂 Base de Conocimiento")
+    pdfs = st.file_uploader("Subir manuales o documentos de venta", type="pdf", accept_multiple_files=True)
     
-    if pdfs and st.button("Procesar e Indexar Documentos"):
-        with st.spinner("Extrayendo y estructurando la base de conocimiento..."):
-            texto_total = ""
+    if pdfs and st.button("Indexar Documentos"):
+        with st.spinner("Creando índice vectorial local..."):
+            texto_completo = ""
             for pdf in pdfs:
-                try:
-                    reader = pypdf.PdfReader(pdf)
-                    for page in reader.pages:
-                        t = page.extract_text()
-                        if t:
-                            texto_total += t + "\n"
-                except Exception as e:
-                    st.error(f"Error al procesar el archivo {pdf.name}: {e}")
+                reader = pypdf.PdfReader(pdf)
+                for page in reader.pages:
+                    t = page.extract_text()
+                    if t: texto_completo += t + "\n"
             
-            # Se elimina el truncamiento arbitrario. 
-            # Llama 3.3 70B tiene capacidad sobrada para procesar manuales completos de una sola vez.
-            st.session_state.texto_pdfs = limpiar_texto(texto_total)
+            # Dividir el texto en trozos pequeños (Chunks)
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            chunks = text_splitter.split_text(texto_completo)
             
-        st.success(f"✅ Análisis completado: {len(pdfs)} documento(s) listos para consulta operativa.")
+            # Crear base de datos vectorial en memoria (FAISS)
+            st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
+            st.success("✅ Documentos indexados. ¡Listo para vender!")
 
-# Flujo Principal de Interacción
-if st.session_state.texto_pdfs:
-    # Renderizar el historial en la interfaz de usuario
-    for msg in st.session_state.historial_interfaz:
+# Interfaz de Chat
+if st.session_state.vector_store:
+    # Mostrar historial
+    for msg in st.session_state.historial:
         with st.chat_message(msg["rol"]):
             st.write(msg["texto"])
 
-    pregunta = st.chat_input("Ingrese la consulta técnica o de ventas requerida...")
+    pregunta = st.chat_input("Consulta técnica o comercial...")
     
     if pregunta:
-        # Mostrar la consulta en pantalla
         with st.chat_message("user"):
             st.write(pregunta)
-
-        # Configuración del marco de actuación (System Prompt)
-        instruccion_sistema = (
-            "Actúa como el asistente corporativo y de ingeniería de ventas de AiVenair. "
-            "Tu única fuente de verdad y conocimiento es el siguiente contexto documental:\n\n"
-            f"<contexto>\n{st.session_state.texto_pdfs}\n</contexto>\n\n"
-            "Reglas estrictas de operación:\n"
-            "1. Prioriza la precisión técnica y los datos comerciales exactos.\n"
-            "2. Si un dato no figura explícitamente en el texto, indica con profesionalismo que la información requiere escalamiento a un ingeniero especializado. No inventes especificaciones.\n"
-            "3. Mantén un tono sumamente formal, persuasivo y estructurado."
-        )
-
-        # Construcción de la carga útil (Payload) con memoria conversacional
-        mensajes_api = [{"role": "system", "content": instruccion_sistema}]
-        mensajes_api.extend(st.session_state.historial_api)
-        mensajes_api.append({"role": "user", "content": pregunta})
+        
+        # PASO CLAVE: Buscar solo los fragmentos relevantes (Top 3)
+        docs_relevantes = st.session_state.vector_store.similarity_search(pregunta, k=3)
+        contexto_reducido = "\n\n".join([doc.page_content for doc in docs_relevantes])
 
         try:
             cliente = Groq(api_key=st.secrets["GROQ_KEY"])
             
+            # Enviamos POCO texto a Groq, ahorrando el 99% de tus tokens
             respuesta = cliente.chat.completions.create(
                 model="llama-3.3-70b-versatile",
-                messages=mensajes_api,
-                max_tokens=2048,
-                temperature=0.1, # Se reduce a 0.1 para forzar respuestas factuales y mitigar alucinaciones
-                top_p=0.9
+                messages=[
+                    {"role": "system", "content": f"Eres el asistente de AiVenair. Responde basado EXCLUSIVAMENTE en este fragmento:\n\n{contexto_reducido}"},
+                    {"role": "user", "content": pregunta}
+                ],
+                temperature=0.1 # Máxima precisión
             )
-            texto = respuesta.choices[0].message.content
+            texto_respuesta = respuesta.choices[0].message.content
 
         except Exception as e:
-            texto = f"❌ Error de procesamiento del modelo: {str(e)}"
+            texto_respuesta = f"❌ Error de API: {str(e)}"
 
-        # Mostrar respuesta en pantalla
         with st.chat_message("assistant"):
-            st.write(texto)
-            
-        # Actualización de memoria visual (Streamlit)
-        st.session_state.historial_interfaz.append({"rol": "user", "texto": pregunta})
-        st.session_state.historial_interfaz.append({"rol": "assistant", "texto": texto})
+            st.write(texto_respuesta)
         
-        # Actualización de memoria estructurada (Groq API)
-        st.session_state.historial_api.append({"role": "user", "content": pregunta})
-        st.session_state.historial_api.append({"role": "assistant", "content": texto})
-
+        st.session_state.historial.append({"rol": "user", "texto": pregunta})
+        st.session_state.historial.append({"rol": "assistant", "texto": texto_respuesta})
 else:
-    st.info("👈 Por favor, inicialice el sistema cargando los documentos requeridos en el panel de control izquierdo.")
+    st.info("👈 Por favor, sube tus documentos para activar el asistente.")
