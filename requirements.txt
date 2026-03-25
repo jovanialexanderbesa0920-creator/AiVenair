@@ -1,5 +1,5 @@
 streamlit
-pypdf
+pdfplumber
 groq
 langchain
 langchain-community
